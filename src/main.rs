@@ -21,6 +21,7 @@ extern crate notify;
 extern crate reqwest;
 extern crate pandoc;
 extern crate rand;
+extern crate regex;
 
 pub use std::io::{self, Read, BufRead};
 pub use std::path::{PathBuf, Path};
@@ -34,6 +35,7 @@ pub use std::collections::HashMap;
 use clap::{Arg, App, SubCommand, AppSettings};
 use notify::{RecommendedWatcher, Watcher, RecursiveMode, DebouncedEvent};
 pub use failure::{Fail, Error};
+pub use regex::Regex;
 
 pub mod api;
 pub use self::api::*;
@@ -78,7 +80,13 @@ impl WithPath for PathBuf {
     }
 }
 
-fn parse_md<T: AsRef<Path>>(path: T) -> Res<String> {
+fn section(title: &str, section: &str) -> String {
+    format!("{}/{}", title, section)
+}
+
+pub const META_FILE: &str = "meta.toml";
+
+fn parse_md<T: AsRef<Path>>(path: T) -> Res<(String, Vec<PathBuf>)> {
     let path = path.as_ref();
     info!("Processing {}...", path.display());
 
@@ -93,18 +101,17 @@ fn parse_md<T: AsRef<Path>>(path: T) -> Res<String> {
         pandoc::PandocOutput::ToBuffer(s) => s, _ => unreachable!("AAAAAAAAAAAAAAAAAAAAAAAAAAAA PANDOKKK")
     };
 
-    Ok(content)
-}
+    let file_regex = Regex::new(r"\[\[File:(.+?)(\|.+)*\]\]")?;
+    let images: Vec<PathBuf> = file_regex.captures_iter(&content).map(|x| {
+        path.with_file_name(&x[1])
+    }).collect();
 
-fn section(title: &str, section: &str) -> String {
-    format!("{}/{}", title, section)
+    Ok((content, images))
 }
-
-pub const META_FILE: &str = "meta.toml";
 pub const INDEX_FILE: &str = "index.md";
 pub const WATCH_WAIT: u64 = 2;
 
-fn read_dir_sections(dir: &PathBuf) -> Res<Vec<(String, String)>> {
+fn read_dir_sections(dir: &PathBuf) -> Res<Vec<(String, String, Vec<PathBuf>)>> {
     let mut sections = Vec::new();
 
     for file in fs::read_dir(&dir)? {
@@ -116,50 +123,64 @@ fn read_dir_sections(dir: &PathBuf) -> Res<Vec<(String, String)>> {
 
         if !ftype.is_dir() {
             if name_str.ends_with(".md") && name != INDEX_FILE {
-                sections.push((name_str.trim_end_matches(".md").to_owned(), parse_md(file.path())?));
+                let (content, images) = parse_md(file.path())?;
+                sections.push((name_str.trim_end_matches(".md").to_owned(), content, images));
             }
         } else if ftype.is_dir() {
             let sub = read_dir_sections(&dir.with(name_str.to_string()))?;
-            sub.into_iter().for_each(|(subname, v)| sections.push((section(&name_str.to_string(), &subname), v)));
+            sub.into_iter().for_each(|(subname, v, images)|
+                sections.push((section(&name_str.to_string(), &subname), v, images)));
         }
     }
 
     Ok(sections)
 }
 
-fn try_proc(cfg: &Config, dir: &PathBuf) -> Res<()> {
+fn try_proc(cfg: &Config, client: &mut MwClient, dir: &PathBuf) -> Res<()> {
     let meta: Metadata = toml::from_str(&fs::read_to_string(dir.with(META_FILE))?)?;
 
-    if !Path::new(&dir.with("thumb.jpg")).exists() {
+    let thumb_name = format!("{}-thumbnail.jpg", meta.title.replace(' ', "-"));
+    if !Path::new(&dir.with(&thumb_name)).exists() {
         info!("Generating thumbnail... (can take a minute)");
         let bg = fs::read(dir.with("bg.jpg")).or_else(|_| fs::read(dir.with("bg.png"))).ok();
-        fs::write(dir.with("thumb.jpg"), make_thumb(bg, &meta)?)?;
+        fs::write(dir.with(&thumb_name), make_thumb(bg, &meta)?)?;
     }
 
     info!("Parsing files...");
-    let index = parse_md(dir.with(INDEX_FILE))?;
+    let (index, mut images) = parse_md(dir.with(INDEX_FILE))?;
     let sections = read_dir_sections(dir)?;
 
-    let mut mwclient = MwClient::new()?;
-    mwclient.login(cfg.username.to_owned(), cfg.password.to_owned())?;
     info!("Uploading index...");
-    mwclient.edit_article(MwArticle {title: meta.title.clone(), text: index, summary: meta.summary.clone()})?;
+    client.edit_article(MwArticle {title: meta.title.clone(), text: index, summary: meta.summary.clone()})?;
 
-    for (name, text) in sections {
+    for (name, text, mut simages) in sections {
         info!("Uploading {}...", name);
-        mwclient.edit_article(MwArticle {title: section(&meta.title, &name), text, summary: meta.summary.clone()})?;
+        images.append(&mut simages);
+        client.edit_article(MwArticle {title: section(&meta.title, &name), text, summary: meta.summary.clone()})?;
+    }
+
+    for image in images {
+        info!("Uploading image {}...", image.display());
+
+        let name = image.file_name().ok_or(format_err!("Invalid path for image {}!", image.display()))?;
+        if image.exists() {
+            client.upload(name.to_string_lossy().to_string(), dir.with(image))?;
+        } else {
+            return Err(format_err!("Image {} doesn't exist!", image.display()).into())
+        }
     }
 
     info!("Packed & published!");
     Ok(())
 }
 
-fn try_watch(cfg: &Config, dir: &PathBuf, path: PathBuf) -> Res<()> {
+fn try_watch(cfg: &Config, client: &mut MwClient, dir: &PathBuf, path: PathBuf) -> Res<()> {
     let path = path.strip_prefix(&dir)?.join(META_FILE);
+
     for x in path.ancestors() {
         let x_path = dir.join(x);
         if x_path.with_file_name(META_FILE).exists() {
-            try_proc(cfg, &x_path.parent().ok_or(format_err!("Error tracing meta file"))?.to_path_buf())?;
+            try_proc(cfg, client, &x_path.parent().unwrap().to_path_buf())?;
         }
     }
 
@@ -259,7 +280,9 @@ fn main() {
 
             let dir = PathBuf::from_str(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
 
-            if let Err(x) = try_proc(&cfg, &dir.to_owned()) {
+            let mut client = MwClient::new().unwrap();
+            client.login(cfg.username.to_owned(), cfg.password.to_owned()).unwrap();
+            if let Err(x) = try_proc(&cfg, &mut client, &dir.to_owned()) {
                 error!("{}", x);
             }
         },
@@ -268,6 +291,9 @@ fn main() {
 
             let dir = PathBuf::from_str(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
             let absolute_dir = std::env::current_dir().unwrap().join(dir);
+
+            let mut client = MwClient::new().unwrap();
+            client.login(cfg.username.to_owned(), cfg.password.to_owned()).unwrap();
 
             let (tx, rx) = channel();
             let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(WATCH_WAIT)).unwrap();
@@ -279,7 +305,7 @@ fn main() {
                     Ok(x) => {
                         match x {
                             DebouncedEvent::Create(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Rename(_, path) => {
-                                if let Err(x) = try_watch(&cfg, &absolute_dir, path) {
+                                if let Err(x) = try_watch(&cfg, &mut client, &absolute_dir, path) {
                                     error!("Error updating watched folder: {}", x);
                                 }
                             }, _ => ()

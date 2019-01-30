@@ -25,7 +25,7 @@ enum Action {
     CheckToken { token: String, #[serde(rename = "type")] type_: String },
     Login {  lgname: String, lgpassword: String, lgtoken: String },
     #[serde(rename = "edit")] EditArticle {#[serde(flatten)] article: MwArticle, bot: bool, token: String},
-
+    Upload { filename: String, filepath: PathBuf, token: String }
 }
 
 #[derive(Serialize, Debug)]
@@ -110,6 +110,13 @@ impl Action {
         let params = |x| { Params {action: x, format: "json".to_owned()} };
         let res = match self {
             x @ Action::Query {..} => client.get(API).query(&params(x)).headers(headers).send()?,
+            Action::Upload {filename, filepath, token} => {
+                let form = multipart::Form::new()
+                    .text("action", "upload").file("file", filepath)?
+                    .text("filename", filename).text("token", token);
+
+                client.post(API).multipart(form).headers(headers).send()?
+            }
             x => client.post(API).form(&params(x)).headers(headers).send()?
         };
 
@@ -204,6 +211,12 @@ impl MwClient {
 
     pub fn edit_article(&mut self, a: MwArticle) -> Res<()> {
         let parms = Action::EditArticle {article: a, bot: true, token: self.token.clone()};
+        self.do_action_req(parms)?;
+        Ok(())
+    }
+
+    pub fn upload(&mut self, filename: String, filepath: PathBuf) -> Res<()> {
+        let parms = Action::Upload {filename, filepath, token: self.token.clone()};
         self.do_action_req(parms)?;
         Ok(())
     }

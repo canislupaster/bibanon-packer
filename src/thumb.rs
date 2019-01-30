@@ -139,7 +139,7 @@ fn draw_text(
 }
 
 pub fn make_thumb(bg: Option<Vec<u8>>, meta: &Metadata) -> Res<Vec<u8>> {
-    let assets = PathBuf::from_str(ASSETS)?;
+    let assets = std::env::current_dir()?.with(ASSETS);
 
     let overlay = load_from_memory_with_format(include_bytes!("../assets/template.png"), ImageFormat::PNG)?;
     let mut thumb = DynamicImage::new_rgb8(700, 1000);
