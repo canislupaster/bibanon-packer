@@ -1,0 +1,30 @@
+[package]
+name = "bibanon-packer"
+version = "0.1.0"
+authors = ["Thomas-QM <thomas@engineeringvirtue.net>"]
+edition = "2018"
+
+[dependencies]
+failure = "0.1.5"
+failure_derive = "0.1.5"
+
+serde = "1.0.85"
+serde_derive = "1.0.85"
+toml = "0.4.10"
+
+hsl = "0.1.1"
+image = "0.20.0"
+rusttype = "0.7.3"
+imageproc = "0.17.0"
+
+log = "0.4"
+simplelog = "0.5.3"
+
+rpassword = "2.1.0"
+
+clap = "2.32.0"
+dirs = "1.0.4"
+notify = "4.0.0"
+reqwest = "0.9.9"
+pandoc = "0.7.0"
+rand = "0.6.4"
