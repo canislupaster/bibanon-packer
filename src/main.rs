@@ -63,6 +63,11 @@ pub struct Metadata {
     sub: Option<String>
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Mod {
+    last_mod: std::time::SystemTime
+}
+
 pub trait WithPath {
     fn with<T: AsRef<Path>>(&self, path: T) -> PathBuf;
     fn ext(&self, ext: &str) -> PathBuf;
@@ -85,6 +90,7 @@ fn section(title: &str, section: &str) -> String {
 }
 
 pub const META_FILE: &str = "meta.toml";
+pub const MOD_FILE: &str = "mod.toml";
 
 fn parse_md<T: AsRef<Path>>(path: T) -> Res<(String, Vec<PathBuf>)> {
     let path = path.as_ref();
@@ -111,8 +117,14 @@ fn parse_md<T: AsRef<Path>>(path: T) -> Res<(String, Vec<PathBuf>)> {
 pub const INDEX_FILE: &str = "index.md";
 pub const WATCH_WAIT: u64 = 2;
 
-fn read_dir_sections(dir: &PathBuf) -> Res<Vec<(String, String, Vec<PathBuf>)>> {
+fn modded(modf: &Mod, path: &PathBuf) -> Res<bool> {
+    let m = fs::metadata(path)?;
+    Ok(m.modified()? > modf.last_mod)
+}
+
+fn read_dir_sections(modf: &Mod, dir: &PathBuf) -> Res<(Vec<(String, String)>, Vec<PathBuf>)> {
     let mut sections = Vec::new();
+    let mut images = Vec::new();
 
     for file in fs::read_dir(&dir)? {
         let file = file?;
@@ -123,53 +135,69 @@ fn read_dir_sections(dir: &PathBuf) -> Res<Vec<(String, String, Vec<PathBuf>)>> 
 
         if !ftype.is_dir() {
             if name_str.ends_with(".md") && name != INDEX_FILE {
-                let (content, images) = parse_md(file.path())?;
-                sections.push((name_str.trim_end_matches(".md").to_owned(), content, images));
+                let path = file.path();
+                let (content, mut simages) = parse_md(&path)?;
+                images.append(&mut simages);
+
+                if modded(&modf, &path)? {
+                    sections.push((name_str.trim_end_matches(".md").to_owned(), content));
+                }
             }
         } else if ftype.is_dir() {
-            let sub = read_dir_sections(&dir.with(name_str.to_string()))?;
-            sub.into_iter().for_each(|(subname, v, images)|
-                sections.push((section(&name_str.to_string(), &subname), v, images)));
+            let (sub, mut simages) = read_dir_sections(modf, &dir.with(name_str.to_string()))?;
+            sub.into_iter().for_each(|(subname, v)|
+                sections.push((section(&name_str.to_string(), &subname), v)));
+            images.append(&mut simages);
         }
     }
 
-    Ok(sections)
+    Ok((sections, images))
 }
 
 fn try_proc(cfg: &Config, client: &mut MwClient, dir: &PathBuf) -> Res<()> {
     let meta: Metadata = toml::from_str(&fs::read_to_string(dir.with(META_FILE))?)?;
+    let modf: Mod = fs::read_to_string(dir.with(MOD_FILE)).map_err(Error::from)
+        .and_then(|x| Ok(toml::from_str(&x)?))
+        .unwrap_or(Mod {last_mod: std::time::SystemTime::UNIX_EPOCH});
 
     let thumb_name = format!("{}-thumbnail.jpg", meta.title.replace(' ', "-"));
     if !Path::new(&dir.with(&thumb_name)).exists() {
-        info!("Generating thumbnail... (can take a minute)");
+        info!("Generating thumbnail... (can take a few seconds)");
         let bg = fs::read(dir.with("bg.jpg")).or_else(|_| fs::read(dir.with("bg.png"))).ok();
         fs::write(dir.with(&thumb_name), make_thumb(bg, &meta)?)?;
     }
 
     info!("Parsing files...");
-    let (index, mut images) = parse_md(dir.with(INDEX_FILE))?;
-    let sections = read_dir_sections(dir)?;
+    let index_path = dir.with(INDEX_FILE);
+    let (index, mut images) = parse_md(&index_path)?;
 
-    info!("Uploading index...");
-    client.edit_article(MwArticle {title: meta.title.clone(), text: index, summary: meta.summary.clone()})?;
+    if modded(&modf, &index_path)? {
+        info!("Uploading index...");
+        client.edit_article(MwArticle { title: meta.title.clone(), text: index, summary: meta.summary.clone() })?;
+    }
 
-    for (name, text, mut simages) in sections {
+    let (sections, mut simages) = read_dir_sections(&modf, dir)?;
+    images.append(&mut simages);
+
+    for (name, text) in sections {
         info!("Uploading {}...", name);
-        images.append(&mut simages);
         client.edit_article(MwArticle {title: section(&meta.title, &name), text, summary: meta.summary.clone()})?;
     }
 
     for image in images {
-        info!("Uploading image {}...", image.display());
+        if modded(&modf, &image)? {
+            info!("Uploading image {}...", image.display());
 
-        let name = image.file_name().ok_or(format_err!("Invalid path for image {}!", image.display()))?;
-        if image.exists() {
-            client.upload(name.to_string_lossy().to_string(), dir.with(image))?;
-        } else {
-            return Err(format_err!("Image {} doesn't exist!", image.display()).into())
+            let name = image.file_name().ok_or(format_err!("Invalid path for image {}!", image.display()))?;
+            if image.exists() {
+                client.upload(name.to_string_lossy().to_string(), image)?;
+            } else {
+                return Err(format_err!("Image {} doesn't exist!", image.display()).into())
+            }
         }
     }
 
+    fs::write(dir.with(MOD_FILE), toml::to_string(&Mod {last_mod: std::time::SystemTime::now()})?)?;
     info!("Packed & published!");
     Ok(())
 }

@@ -6,8 +6,6 @@ use hsl::HSL;
 use rusttype::{Font, Scale, point, PositionedGlyph};
 use rand::Rng;
 
-pub const UNSPLASH: &str = "https://source.unsplash.com";
-
 //templating consts
 
 pub type Rect = (u32, u32, u32, u32);
@@ -21,10 +19,95 @@ pub const IMAGE_OVERLAY_RECT: Rect = (25, 55, 222, 475);
 pub const TITLE_RECT: Rect = (7, 816, 692, 992);
 pub const TITLE_PADDING: u32 = 18;
 pub const SUBTITLE: Pos = (35, 955);
+pub const C64_CHARS: &str = "abcdefghijklmnopqrstuvwxyz"; //alpaahabeat
+pub const GRID_SIZE: u32 = 5;
 
 pub const HUE_INCR: i32 = 40;
 
 pub const ASSETS: &str = "./assets";
+
+pub fn make_thumb(bg: Option<Vec<u8>>, meta: &Metadata) -> Res<Vec<u8>> {
+    let assets = std::env::current_dir()?.with(ASSETS);
+    let regular = Font::from_bytes(include_bytes!("../assets/LibreBaskerville-Regular.ttf") as &[u8])?;
+    let bold = Font::from_bytes(include_bytes!("../assets/LibreBaskerville-Bold.ttf") as &[u8])?;
+    let symbols = Font::from_bytes(include_bytes!("../assets/rosette110621.ttf") as &[u8])?;
+    let mut rng = rand::thread_rng();
+
+    let overlay = load_from_memory_with_format(include_bytes!("../assets/template.png"), ImageFormat::PNG)?;
+    let mut thumb = DynamicImage::new_rgb8(700, 1000);
+
+    let h: i32 = (HUE_INCR * rng.gen_range(0, 20))%360;
+    let h2: i32 = (h+180)%360; //rotate 180 and complement other color
+
+    let (bg_w, bg_h) = (get_w(IMAGE_RECT), get_h(IMAGE_RECT));
+    let mut bgimage = bg.ok_or(format_err!("No bg image found!"))
+        .and_then(|bg| load_from_memory(&*bg).map_err(Error::from)).unwrap_or_else(|_| {
+
+        let fg = HSL {h: h as f64, s: 100.0, l: 40.0}.to_rgb();
+        let bg = HSL {h: h2 as f64, s: 50.0, l: 50.0}.to_rgb();
+        let mut ply_bg = DynamicImage::new_rgb8(bg_w, bg_h);
+        let incr = bg_w/GRID_SIZE;
+
+        let char1 = rng.gen_range(0, C64_CHARS.len());
+        let char2 = rng.gen_range(0, C64_CHARS.len());
+        let chars: Vec<char> = C64_CHARS.chars().collect();
+        let chars = [chars[char1], chars[char2]];
+
+        draw_rect(&mut ply_bg, (0,0,bg_w,bg_h), bg);
+
+        for x in 0..GRID_SIZE {
+            for y in 0..GRID_SIZE {
+                let char1or2 = rng.gen_range(0, 2);
+                let chosen = chars[char1or2].to_string();
+                draw_text(&mut ply_bg, Rgba([fg.0, fg.1, fg.2, 255]), (x*incr, y*incr), Scale::uniform(incr as f32), &symbols, &chosen)
+            }
+        }
+
+        ply_bg
+    });
+
+    bgimage = bgimage.resize_to_fill(bg_w, bg_h, imageops::FilterType::Gaussian);
+    bgimage.adjust_contrast(4.0);
+    imageops::overlay(&mut thumb, &bgimage, IMAGE_RECT.0, IMAGE_RECT.1);
+
+    let hsl = HSL {h: h as f64, s: 70.0, l: 35.0};
+
+    let bottom_rgb = HSL::to_rgb(&hsl);
+    draw_rect(&mut thumb, TITLE_RECT, bottom_rgb);
+
+    draw_text_box(&mut thumb, Rgba([255,255,255,255]), pad(TITLE_RECT, TITLE_PADDING), 10, Scale::uniform(50.0), &bold, &meta.title);
+
+    if let Some(x) = &meta.sub {
+        draw_text(&mut thumb, Rgba([255, 255, 255, 255]), SUBTITLE, Scale::uniform(30.0), &bold, x);
+    }
+
+    let hsl2 = HSL {h: h2 as f64, s: 35.0, l: 30.0};
+
+    let top_rgb = HSL::to_rgb(&hsl2);
+    draw_rect(&mut thumb, INFO_RECT, top_rgb);
+    draw_text(&mut thumb, Rgba([0,0,0,255]), (INFO_TEXT_RECT.0, INFO_TEXT_RECT.1), Scale::uniform(25.0), &regular, &meta.stats.join(" • "));
+
+    if let Ok(source) = fs::read(assets.with(&meta.source).ext("png")) {
+        let mut img = load_from_memory_with_format(&*source, ImageFormat::PNG)?;
+        img = img.resize_to_fill(get_w(ICON_RECT), get_h(ICON_RECT), imageops::FilterType::Gaussian);
+        imageops::overlay(&mut thumb, &img, ICON_RECT.0, ICON_RECT.1);
+    }
+
+    if let Ok(type_) = fs::read(assets.with(&meta.type_).ext("png")) {
+        let mut img = load_from_memory_with_format(&*type_, ImageFormat::PNG)?;
+        img = img.resize_to_fill(get_w(IMAGE_OVERLAY_RECT), get_h(IMAGE_OVERLAY_RECT), imageops::FilterType::Nearest); //for crisp pixel art
+        transparentize(&mut img, 0.3);
+        imageops::overlay(&mut thumb, &img, IMAGE_OVERLAY_RECT.0, IMAGE_OVERLAY_RECT.1);
+    }
+
+    imageops::overlay(&mut thumb, &overlay, 0, 0);
+
+    let mut buf = Vec::new();
+    thumb.write_to(&mut buf, ImageFormat::JPEG)?;
+
+    Ok(buf)
+}
+
 
 fn get_w(rect: Rect) -> u32 {
     rect.2 - rect.0
@@ -136,77 +219,4 @@ fn draw_text(
             })
         }
     }
-}
-
-pub fn make_thumb(bg: Option<Vec<u8>>, meta: &Metadata) -> Res<Vec<u8>> {
-    let assets = std::env::current_dir()?.with(ASSETS);
-
-    let overlay = load_from_memory_with_format(include_bytes!("../assets/template.png"), ImageFormat::PNG)?;
-    let mut thumb = DynamicImage::new_rgb8(700, 1000);
-
-    let (bg_w, bg_h) = (get_w(IMAGE_RECT), get_h(IMAGE_RECT));
-    let bg = bg.ok_or(format_err!("No bg image found!")).or_else(|_| -> Res<Vec<u8>> {
-        let mut resp = reqwest::get(&format!("{}/{}x{}/?{}", UNSPLASH, bg_w, bg_h, meta.tags.join(",")))?;
-
-        let mut buf = Vec::new();
-        resp.read_to_end(&mut buf)?;
-
-        Ok(buf)
-    })?;
-
-    let h: i32 = (HUE_INCR * rand::thread_rng().gen_range(0, 10))%360;
-
-    let bgimage = load_from_memory(&*bg)?;
-    let mut bgimage_buf = ImageBuffer::new(bgimage.width(), bgimage.height());
-    bgimage_buf.copy_from(&bgimage, 0, 0);
-
-    let bgimage = filter::median_filter(&bgimage_buf, 5);
-
-    let mut bgimage_dyn = DynamicImage::new_rgb8(bgimage.width(), bgimage.height());
-    bgimage_dyn.copy_from(&bgimage, 0, 0);
-
-    bgimage_dyn = bgimage_dyn.resize_to_fill(bg_w, bg_h, imageops::FilterType::Gaussian);
-    bgimage_dyn.adjust_contrast(4.0);
-    imageops::overlay(&mut thumb, &bgimage_dyn, IMAGE_RECT.0, IMAGE_RECT.1);
-
-    let hsl = HSL {h: h as f64, s: 70.0, l: 35.0};
-
-    let bottom_rgb = HSL::to_rgb(&hsl);
-    draw_rect(&mut thumb, TITLE_RECT, bottom_rgb);
-
-    let regular = Font::from_bytes(include_bytes!("../assets/LibreBaskerville-Regular.ttf") as &[u8])?;
-    let bold = Font::from_bytes(include_bytes!("../assets/LibreBaskerville-Bold.ttf") as &[u8])?;
-
-    draw_text_box(&mut thumb, Rgba([255,255,255,255]), pad(TITLE_RECT, TITLE_PADDING), 10, Scale::uniform(50.0), &bold, &meta.title);
-
-    if let Some(x) = &meta.sub {
-        draw_text(&mut thumb, Rgba([255, 255, 255, 255]), SUBTITLE, Scale::uniform(30.0), &bold, x);
-    }
-
-    let h2: i32 = (h*180)%360; //rotate 180 and complement other color
-    let hsl2 = HSL {h: h2 as f64, s: 35.0, l: 30.0};
-
-    let top_rgb = HSL::to_rgb(&hsl2);
-    draw_rect(&mut thumb, INFO_RECT, top_rgb);
-    draw_text(&mut thumb, Rgba([0,0,0,255]), (INFO_TEXT_RECT.0, INFO_TEXT_RECT.1), Scale::uniform(25.0), &regular, &meta.stats.join(" • "));
-
-    if let Ok(source) = fs::read(assets.with(&meta.source).ext("png")) {
-        let mut img = load_from_memory_with_format(&*source, ImageFormat::PNG)?;
-        img = img.resize_to_fill(get_w(ICON_RECT), get_h(ICON_RECT), imageops::FilterType::Gaussian);
-        imageops::overlay(&mut thumb, &img, ICON_RECT.0, ICON_RECT.1);
-    }
-
-    if let Ok(type_) = fs::read(assets.with(&meta.type_).ext("png")) {
-        let mut img = load_from_memory_with_format(&*type_, ImageFormat::PNG)?;
-        img = img.resize_to_fill(get_w(IMAGE_OVERLAY_RECT), get_h(IMAGE_OVERLAY_RECT), imageops::FilterType::Nearest); //for crisp pixel art
-        transparentize(&mut img, 0.3);
-        imageops::overlay(&mut thumb, &img, IMAGE_OVERLAY_RECT.0, IMAGE_OVERLAY_RECT.1);
-    }
-
-    imageops::overlay(&mut thumb, &overlay, 0, 0);
-
-    let mut buf = Vec::new();
-    thumb.write_to(&mut buf, ImageFormat::JPEG)?;
-
-    Ok(buf)
 }

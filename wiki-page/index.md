@@ -1,6 +1,6 @@
 ## Bibanon packer is nice thinge
 
-![THUMBNAIL](Bibanon-Packer-thumbnail.jpg)
+[[File:Bibanon-Packer-thumbnail.jpg|thumb]]
 
 go check out some sorta secsion [here](Bibanon Packer/section).
 
