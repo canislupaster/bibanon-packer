@@ -216,8 +216,8 @@ impl MwClient {
     }
 
     pub fn upload(&mut self, filename: String, filepath: PathBuf) -> Res<()> {
-//        let parms = Action::Upload {filename, filepath, token: self.token.clone()};
-//        self.do_action_req(parms)?;
+        let parms = Action::Upload {filename, filepath, token: self.token.clone()};
+        self.do_action_req(parms)?;
         Ok(())
     }
 }
