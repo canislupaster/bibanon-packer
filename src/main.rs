@@ -279,7 +279,7 @@ fn main() {
                     Ok(x) => {
                         println!("WATCH: {:?}", x);
                         match x {
-                            DebouncedEvent::Write(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Create(path) | DebouncedEvent::Rename(_, path) => {
+                            DebouncedEvent::Write(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Rename(_, path) => {
                                 if let Err(x) = try_watch(&cfg, &absolute_dir, path) {
                                     error!("Error updating watched folder: {}", x);
                                 }
