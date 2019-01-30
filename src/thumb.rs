@@ -24,10 +24,10 @@ pub const GRID_SIZE: u32 = 5;
 
 pub const HUE_INCR: i32 = 40;
 
-pub const ASSETS: &str = "./assets";
+pub const ASSETS: &str = "assets";
 
 pub fn make_thumb(bg: Option<Vec<u8>>, meta: &Metadata) -> Res<Vec<u8>> {
-    let assets = std::env::current_dir()?.with(ASSETS);
+    let assets = std::env::current_exe()?.parent().unwrap().to_path_buf().with(ASSETS);
     let regular = Font::from_bytes(include_bytes!("../assets/LibreBaskerville-Regular.ttf") as &[u8])?;
     let bold = Font::from_bytes(include_bytes!("../assets/LibreBaskerville-Bold.ttf") as &[u8])?;
     let symbols = Font::from_bytes(include_bytes!("../assets/rosette110621.ttf") as &[u8])?;
@@ -93,7 +93,7 @@ pub fn make_thumb(bg: Option<Vec<u8>>, meta: &Metadata) -> Res<Vec<u8>> {
         imageops::overlay(&mut thumb, &img, ICON_RECT.0, ICON_RECT.1);
     }
 
-    if let Ok(type_) = fs::read(assets.with(&meta.type_).ext("png")) {
+    if let Ok(type_) = fs::read(assets.with (&meta.type_).ext("png")) {
         let mut img = load_from_memory_with_format(&*type_, ImageFormat::PNG)?;
         img = img.resize_to_fill(get_w(IMAGE_OVERLAY_RECT), get_h(IMAGE_OVERLAY_RECT), imageops::FilterType::Nearest); //for crisp pixel art
         transparentize(&mut img, 0.3);
@@ -153,37 +153,62 @@ fn draw_text_box(
     let alpha = color.data[3] as f32/255.0;
     let v_metrics = font.v_metrics(scale);
     let offset = point(0.0, v_metrics.ascent);
-
-    let glyphs: Vec<PositionedGlyph<'_>> = font.layout(text, scale, offset).collect();
-    let width: i32 = glyphs.iter().last().and_then(|x| x.pixel_bounding_box().map(|x| x.max.x)).unwrap_or(0);
     let rectwidth = get_w(rect) as i32;
-    let off = (rectwidth - width.min(rectwidth))/2;
-    let mut newln = 0;
-    let mut ln = 0;
 
-    for g in glyphs {
-        if let Some(bb) = g.pixel_bounding_box() {
-            if bb.max.x - ln + rect.0 as i32 > rect.2 as i32 {
-                newln += bb.height();
-                newln += padding;
-                ln = bb.min.x;
+    let mut lines = Vec::new();
+    let split_txt = text.replace(' ', "   ");
+
+    for txt in split_txt.split("  ") {
+        let txtglyphs: Vec<PositionedGlyph<'_>> = font.layout(txt, scale, offset).collect();
+        let width: i32 = txtglyphs.iter().last().and_then(|x| x.pixel_bounding_box().map(|x| x.max.x)).unwrap_or(0);
+
+        if width > rectwidth {
+            lines.push((width, vec![txtglyphs]));
+        } else {
+            if let Some(x) = lines.last_mut() {
+                x.0 += width;
+                x.1.push(txtglyphs);
+            } else {
+                lines.push((width, vec![txtglyphs]));
             }
-
-            let hoffset = -ln + off;
-            let voffset = newln;
-
-            g.draw(|gx, gy, gv| {
-                let gx = gx as i32 + bb.min.x;
-                let gy = gy as i32 + bb.min.y;
-
-                let image_x = gx + hoffset + rect.0 as i32;
-                let image_y = gy + voffset + rect.1 as i32;
-
-                if image_x >= 0 && image_x < rect.2 as i32 && image_y >= 0 && image_y < rect.3 as i32 {
-                    draw_glyph(image, color, alpha, gv, image_x, image_y);
-                }
-            })
         }
+    }
+
+    let mut newln = 0;
+    for line in lines.iter() {
+        let mut cnewln = 0;
+        let mut hoffset = 0;
+
+        let off = (rectwidth - line.0.min(rectwidth))/2;
+
+        for segment in &line.1 {
+            let start = hoffset;
+
+            for g in segment {
+                if let Some(bb) = g.pixel_bounding_box() {
+                    cnewln = bb.height();
+                    hoffset = bb.max.x;
+
+                    let hoffset = off + start;
+                    let voffset = newln;
+
+                    g.draw(|gx, gy, gv| {
+                        let gx = gx as i32 + bb.min.x;
+                        let gy = gy as i32 + bb.min.y;
+
+                        let image_x = gx + hoffset + rect.0 as i32;
+                        let image_y = gy + voffset + rect.1 as i32;
+
+                        if image_x >= 0 && image_x < rect.2 as i32 && image_y >= 0 && image_y < rect.3 as i32 {
+                            draw_glyph(image, color, alpha, gv, image_x, image_y);
+                        }
+                    });
+                }
+            }
+        }
+
+        cnewln += padding;
+        newln += cnewln;
     }
 }
 

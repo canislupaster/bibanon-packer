@@ -118,6 +118,7 @@ pub const INDEX_FILE: &str = "index.md";
 pub const WATCH_WAIT: u64 = 2;
 
 fn modded(modf: &Mod, path: &PathBuf) -> Res<bool> {
+    trace!("Checking mod for {}", path.display());
     let m = fs::metadata(path)?;
     Ok(m.modified()? > modf.last_mod)
 }
@@ -126,6 +127,7 @@ fn read_dir_sections(modf: &Mod, dir: &PathBuf) -> Res<(Vec<(String, String)>, V
     let mut sections = Vec::new();
     let mut images = Vec::new();
 
+    trace!("Reading directory {}", dir.display());
     for file in fs::read_dir(&dir)? {
         let file = file?;
         let name = file.file_name();
@@ -155,11 +157,15 @@ fn read_dir_sections(modf: &Mod, dir: &PathBuf) -> Res<(Vec<(String, String)>, V
 }
 
 fn try_proc(cfg: &Config, client: &mut MwClient, dir: &PathBuf) -> Res<()> {
+    debug!("Processing directory {}", dir.display());
+    trace!("Reading meta.toml");
     let meta: Metadata = toml::from_str(&fs::read_to_string(dir.with(META_FILE))?)?;
+    trace!("Reading mod.toml");
     let modf: Mod = fs::read_to_string(dir.with(MOD_FILE)).map_err(Error::from)
         .and_then(|x| Ok(toml::from_str(&x)?))
         .unwrap_or(Mod {last_mod: std::time::SystemTime::UNIX_EPOCH});
 
+    trace!("Checking for thumbnail");
     let thumb_name = format!("{}-thumbnail.jpg", meta.title.replace(' ', "-"));
     if !Path::new(&dir.with(&thumb_name)).exists() {
         info!("Generating thumbnail... (can take a few seconds)");
@@ -185,7 +191,7 @@ fn try_proc(cfg: &Config, client: &mut MwClient, dir: &PathBuf) -> Res<()> {
     }
 
     for image in images {
-        if modded(&modf, &image)? {
+        if let Ok(true) = modded(&modf, &image) {
             info!("Uploading image {}...", image.display());
 
             let name = image.file_name().ok_or(format_err!("Invalid path for image {}!", image.display()))?;
@@ -253,13 +259,12 @@ fn get_cfg() -> Config {
 }
 
 fn main() {
-    simplelog::TermLogger::init(log::LevelFilter::Info, simplelog::Config::default()).unwrap();
-
     let args =
         App::new("Bibanon Packer")
             .version("0.1.0")
             .author("dreamatic#3333")
             .about("Packs stuff into dah wikeih")
+            .arg(Arg::with_name("trace").short("t").help("Trace log level"))
             .subcommand(SubCommand::with_name("init")
                 .about("Initialize a directory with a meta and index file.")
                 .arg(Arg::with_name("DIRECTORY")
@@ -279,9 +284,12 @@ fn main() {
             .setting(AppSettings::SubcommandRequiredElseHelp)
             .get_matches();
 
+    let level = if args.occurrences_of("trace") > 0 { log::LevelFilter::Trace } else { log::LevelFilter::Info };
+    simplelog::TermLogger::init(level, simplelog::Config::default()).unwrap();
+
     match args.subcommand() {
         ("init", Some(args)) => {
-            let dir = PathBuf::from_str(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
+            let dir = fs::canonicalize(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
             let _ = fs::create_dir_all(&dir);
 
             let default_meta = Metadata {
@@ -306,7 +314,7 @@ fn main() {
         ("pack", Some(args)) => {
             let cfg = get_cfg();
 
-            let dir = PathBuf::from_str(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
+            let dir = fs::canonicalize(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
 
             let mut client = MwClient::new().unwrap();
             client.login(cfg.username.to_owned(), cfg.password.to_owned()).unwrap();
@@ -317,8 +325,7 @@ fn main() {
         ("watch", Some(args)) => {
             let cfg = get_cfg();
 
-            let dir = PathBuf::from_str(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
-            let absolute_dir = std::env::current_dir().unwrap().join(dir);
+            let dir = fs::canonicalize(args.value_of("DIRECTORY").unwrap_or("./")).expect("Cannot parse path!");
 
             let mut client = MwClient::new().unwrap();
             client.login(cfg.username.to_owned(), cfg.password.to_owned()).unwrap();
@@ -326,14 +333,14 @@ fn main() {
             let (tx, rx) = channel();
             let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(WATCH_WAIT)).unwrap();
 
-            watcher.watch(&absolute_dir, RecursiveMode::Recursive).unwrap();
+            watcher.watch(&dir, RecursiveMode::Recursive).unwrap();
 
             loop {
                 match rx.recv() {
                     Ok(x) => {
                         match x {
                             DebouncedEvent::Create(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Rename(_, path) => {
-                                if let Err(x) = try_watch(&cfg, &mut client, &absolute_dir, path) {
+                                if let Err(x) = try_watch(&cfg, &mut client, &dir, path) {
                                     error!("Error updating watched folder: {}", x);
                                 }
                             }, _ => ()
