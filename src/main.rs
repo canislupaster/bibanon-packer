@@ -155,7 +155,7 @@ fn try_proc(cfg: &Config, dir: &PathBuf) -> Res<()> {
 }
 
 fn try_watch(cfg: &Config, dir: &PathBuf, path: PathBuf) -> Res<()> {
-    let path = path.strip_prefix(&dir)?;
+    let path = path.strip_prefix(&dir)?.join(META_FILE);
     for x in path.ancestors() {
         let x_path = dir.join(x);
         if x_path.with_file_name(META_FILE).exists() {
@@ -248,7 +248,7 @@ fn main() {
             fs::write(dir.with(META_FILE), toml::to_string(&default_meta).expect("Error serializing metadata")).expect("Error writing metadata file!");
             fs::write(dir.with(INDEX_FILE), "## Description\nSomething new or something old: something incredible, waiting to be inserted.").expect("Error writing index file!");
 
-            println!("Initialized directory!");
+            info!("Initialized directory!");
         },
         ("credentials", Some(args)) => {
             set_cfg(cfg_path(), args.value_of("USERNAME").map(|x| x.to_owned()));
@@ -278,7 +278,7 @@ fn main() {
                 match rx.recv() {
                     Ok(x) => {
                         match x {
-                            DebouncedEvent::Write(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Rename(_, path) => {
+                            DebouncedEvent::Create(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Rename(_, path) => {
                                 if let Err(x) = try_watch(&cfg, &absolute_dir, path) {
                                     error!("Error updating watched folder: {}", x);
                                 }
