@@ -277,7 +277,6 @@ fn main() {
             loop {
                 match rx.recv() {
                     Ok(x) => {
-                        println!("WATCH: {:?}", x);
                         match x {
                             DebouncedEvent::Write(path) | DebouncedEvent::Remove(path) | DebouncedEvent::Rename(_, path) => {
                                 if let Err(x) = try_watch(&cfg, &absolute_dir, path) {
